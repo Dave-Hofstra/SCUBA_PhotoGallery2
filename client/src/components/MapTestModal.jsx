@@ -1,0 +1,348 @@
+import { useEffect, useRef, useState, useMemo } from 'react';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { VECTOR_STYLE as MAP_STYLE, DEFAULT_CENTER as MAP_CENTER, DEFAULT_ZOOM as MAP_ZOOM } from '../config/mapConfig';
+
+export default function MapTestModal({ mode, sites, activeDiveSiteId, onClose }) {
+  const mapContainer = useRef(null);
+  const mapInstance = useRef(null);
+  const initialViewRef = useRef(null);
+  const [selectedCity, setSelectedCity] = useState(null);
+  const [zoomLevel, setZoomLevel] = useState(MAP_ZOOM);
+  const isDirectModeRef = useRef(false);
+  const markersRef = useRef([]);
+
+  // Extract unique city_island values for sidebar
+  const cities = useMemo(() => {
+    if (mode !== 'allSites') return [];
+    const cityMap = new Map();
+    sites.forEach(s => {
+      if (s.city_island) {
+        const normalized = s.city_island.split(',')[0].trim();
+        if (!cityMap.has(normalized)) {
+          cityMap.set(normalized, []);
+        }
+        cityMap.get(normalized).push(s);
+      }
+    });
+    return Array.from(cityMap.entries())
+      .map(([name, siteList]) => ({ name, sites: siteList }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [sites, mode]);
+
+  // Build city cluster data: one pin per city/island with centroid + total dive count
+  const cityClusters = useMemo(() => {
+    const cityMap = new Map();
+    sites.forEach(s => {
+      if (s.city_island && s.latitude != null && s.longitude != null) {
+        const normalized = s.city_island.split(',')[0].trim();
+        if (!cityMap.has(normalized)) {
+          cityMap.set(normalized, { sumLat: 0, sumLng: 0, count: 0, totalDives: 0, cityName: normalized });
+        }
+        const entry = cityMap.get(normalized);
+        entry.sumLat += s.latitude;
+        entry.sumLng += s.longitude;
+        entry.count++;
+        entry.totalDives += s.dive_count || 0;
+      }
+    });
+    return Array.from(cityMap.values())
+      .map(c => ({
+        name: c.cityName,
+        latitude: c.sumLat / c.count,
+        longitude: c.sumLng / c.count,
+        totalDives: c.totalDives,
+        siteCount: c.count
+      }))
+      .sort((a, b) => {
+        // Ensure specific render order for overlapping pins (later = on top)
+        const aLower = a.name.toLowerCase();
+        const bLower = b.name.toLowerCase();
+        const aIsBonaire = aLower.includes('bonaire');
+        const bIsBonaire = bLower.includes('bonaire');
+        const aIsCuracao = aLower.includes('curacao');
+        const bIsCuracao = bLower.includes('curacao');
+        const aIsCozumel = aLower.includes('cozumel');
+        const bIsCozumel = bLower.includes('cozumel');
+        const aIsQuintanaRoo = aLower.includes('quintana roo');
+        const bIsQuintanaRoo = bLower.includes('quintana roo');
+        // Cozumel should be on top of Quintana Roo
+        if (aIsQuintanaRoo && bIsCozumel) return -1;
+        if (aIsCozumel && bIsQuintanaRoo) return 1;
+        // Bonaire should be on top of Curacao
+        if (aIsCuracao && bIsBonaire) return -1;
+        if (aIsBonaire && bIsCuracao) return 1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [sites]);
+
+  useEffect(() => {
+    if (!mapContainer.current) return;
+
+    const map = new maplibregl.Map({
+      container: mapContainer.current,
+      style: MAP_STYLE,
+      center: MAP_CENTER,
+      zoom: MAP_ZOOM,
+      attributionControl: true
+    });
+
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    mapInstance.current = map;
+
+    // Helper function to create scuba flag marker HTML
+    const createScubaMarker = (diveCount, index, isCluster = false) => {
+      const scale = 0.5;
+      const pinBodyFill = '#8B140E';
+      const circleFill = '#E11913';
+      const stripeFill = '#FFF9E8';
+      const borderStroke = '#5E0D09';
+
+      return `
+        <div style="position: relative; width: ${64 * scale}px; height: ${80 * scale}px;">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 80" width="${64 * scale}" height="${80 * scale}" style="display: block;">
+            <defs>
+              <filter id="shadow-${index}" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
+              </filter>
+            </defs>
+            <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="${pinBodyFill}" filter="url(#shadow-${index})"/>
+            <circle cx="32" cy="28" r="22" fill="${circleFill}"/>
+            <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="${stripeFill}"/>
+            <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
+            <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="${borderStroke}" stroke-width="3"/>
+          </svg>
+          ${diveCount > 0 ? `<div style="
+            position: absolute; top: -10px; right: -12px;
+            background: #111;
+            color: #fff;
+            font-size: 13px;
+            font-weight: 800;
+            font-family: system-ui, -apple-system, sans-serif;
+            width: 26px;
+            height: 26px;
+            border-radius: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2.5px solid #4fc3ff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+          ">${diveCount}</div>` : ''}
+        </div>
+      `;
+    };
+
+    // Remove all markers
+    function clearAllMarkers() {
+      markersRef.current.forEach(m => m.remove());
+      markersRef.current = [];
+    }
+
+    // Create city cluster markers (zoom < 9) — one pin per city with total dive count
+    function createCityClusterMarkers() {
+      clearAllMarkers();
+      cityClusters.forEach((city, index) => {
+        const lngLat = [city.longitude, city.latitude];
+
+        const el = document.createElement('div');
+        el.className = 'scuba-flag-marker';
+        el.innerHTML = createScubaMarker(city.totalDives, index, true);
+        el.style.cursor = 'pointer';
+
+        const popupHtml = `<b>${city.name}</b><br/>🤿 ${city.totalDives} dive${city.totalDives !== 1 ? 's' : ''} across ${city.siteCount} site${city.siteCount !== 1 ? 's' : ''}`;
+
+        const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat(lngLat)
+          .setPopup(new maplibregl.Popup({ offset: 45 }).setHTML(popupHtml))
+          .addTo(map);
+        
+        markersRef.current.push(marker);
+      });
+    }
+
+    // Create individual site markers (zoom >= 9)
+    function createIndividualMarkers() {
+      clearAllMarkers();
+      sites.forEach((site, index) => {
+        if (site.latitude == null || site.longitude == null) return;
+        const lngLat = [site.longitude, site.latitude];
+
+        const el = document.createElement('div');
+        el.className = 'scuba-flag-marker';
+        el.innerHTML = createScubaMarker(site.dive_count || 0, index, false);
+        el.style.cursor = 'pointer';
+
+        const siteName = site.dive_site_name || 'Unknown Site';
+        const location = [site.city_island, site.country_region].filter(Boolean).join(', ');
+        const diveCount = site.dive_count || 0;
+        const popupHtml = `<b>${siteName}</b>${location ? `<br/>📍 ${location}` : ''}${diveCount > 0 ? `<br/>🤿 ${diveCount} dive${diveCount > 1 ? 's' : ''}` : ''}`;
+
+        const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat(lngLat)
+          .setPopup(new maplibregl.Popup({ offset: 45 }).setHTML(popupHtml))
+          .addTo(map);
+        
+        markersRef.current.push(marker);
+      });
+    }
+
+    map.on('load', () => {
+      const bounds = new maplibregl.LngLatBounds();
+      for (const site of sites) {
+        if (site.latitude == null || site.longitude == null) continue;
+        bounds.extend([site.longitude, site.latitude]);
+      }
+
+      // Initial setup based on starting zoom
+      const initialZoom = map.getZoom();
+      if (initialZoom >= 9) {
+        isDirectModeRef.current = true;
+        createIndividualMarkers();
+      } else {
+        isDirectModeRef.current = false;
+        createCityClusterMarkers();
+      }
+
+      // Track zoom level for debug display
+      map.on('zoom', () => {
+        setZoomLevel(map.getZoom());
+      });
+
+      // Switch between modes at zoom 9 threshold
+      map.on('zoomend', () => {
+        const currentZoom = map.getZoom();
+        
+        if (currentZoom >= 9 && !isDirectModeRef.current) {
+          isDirectModeRef.current = true;
+          createIndividualMarkers();
+        } else if (currentZoom < 9 && isDirectModeRef.current) {
+          isDirectModeRef.current = false;
+          createCityClusterMarkers();
+        }
+      });
+
+      // Fit bounds
+      map.once('idle', () => {
+        if (!bounds.isEmpty()) {
+          map.resize();
+          map.fitBounds(bounds, { padding: 80, maxZoom: 10 });
+          map.once('moveend', () => {
+            initialViewRef.current = {
+              center: map.getCenter(),
+              zoom: map.getZoom()
+            };
+          });
+        } else {
+          initialViewRef.current = {
+            center: map.getCenter(),
+            zoom: map.getZoom()
+          };
+        }
+      });
+    });
+
+    return () => {
+      // Remove any popup elements from the DOM
+      document.querySelectorAll('.maplibregl-popup').forEach(el => el.remove());
+      clearAllMarkers();
+      map.remove();
+      mapInstance.current = null;
+    };
+  }, [sites, mode, activeDiveSiteId, cityClusters]);
+
+  // Handle resize when modal opens
+  useEffect(() => {
+    if (mapInstance.current) {
+      setTimeout(() => {
+        mapInstance.current.resize();
+      }, 100);
+    }
+  }, []);
+
+  // Fly to city when selected — always zoom to at least 9
+  useEffect(() => {
+    if (!selectedCity || !mapInstance.current) return;
+    const citySites = sites.filter(s => {
+      if (!s.city_island) return false;
+      const normalized = s.city_island.split(',')[0].trim();
+      return normalized === selectedCity && s.latitude != null && s.longitude != null;
+    });
+    if (citySites.length === 0) return;
+
+    // Compute centroid of all sites in this city
+    let sumLat = 0, sumLng = 0;
+    citySites.forEach(s => {
+      sumLat += s.latitude;
+      sumLng += s.longitude;
+    });
+    const centerLng = sumLng / citySites.length;
+    const centerLat = sumLat / citySites.length;
+    
+    mapInstance.current.flyTo({
+      center: [centerLng, centerLat],
+      zoom: 9,
+      duration: 1200
+    });
+  }, [selectedCity, sites]);
+
+  // Reset map to initial view
+  const handleReset = () => {
+    const map = mapInstance.current;
+    if (!map) return;
+    setSelectedCity(null);
+    if (initialViewRef.current) {
+      map.flyTo({
+        center: initialViewRef.current.center,
+        zoom: initialViewRef.current.zoom,
+        duration: 1000
+      });
+    } else {
+      map.flyTo({
+        center: MAP_CENTER,
+        zoom: MAP_ZOOM,
+        duration: 1000
+      });
+    }
+  };
+
+  return (
+    <div className="map-overlay open" onClick={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="map-card">
+        <div className="map-card-header">
+          <span className="map-card-title">
+            {mode === 'allSites' ? 'All Dive Sites' : 'Dive Site Map'}
+          </span>
+          <div className="map-header-actions">
+            <button className="map-reset-btn" onClick={handleReset} title="Reset Map View">
+              ↺
+            </button>
+            <button className="map-close-btn" onClick={onClose}>&times;</button>
+          </div>
+        </div>
+        <div className="map-body">
+          {mode === 'allSites' && cities.length > 0 && (
+            <div className="map-sidebar">
+              <div className="map-sidebar-title">Cities / Islands</div>
+              <div className="map-sidebar-list">
+                {cities.map(city => (
+                  <div
+                    key={city.name}
+                    className={`map-sidebar-item ${selectedCity === city.name ? 'active' : ''}`}
+                    onClick={() => setSelectedCity(selectedCity === city.name ? null : city.name)}
+                  >
+                    {city.name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div ref={mapContainer} className="map-container">
+            <div className="map-zoom-indicator">Zoom: {zoomLevel.toFixed(1)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

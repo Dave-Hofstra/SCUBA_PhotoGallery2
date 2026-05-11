@@ -1,0 +1,27 @@
+[Unit]
+Description=SCUBA Photo Gallery 2 Backend
+After=network.target
+
+[Service]
+Type=simple
+User=dhofstra
+WorkingDirectory=/mnt/ServerDocs/Websites/SCUBA_PhotoGallery2
+
+# Use the node_modules installed on the non-noexec filesystem
+Environment=NODE_PATH=/home/dhofstra/scuba-server-modules/node_modules
+EnvironmentFile=/mnt/ServerDocs/Websites/SCUBA_PhotoGallery2/.env
+ExecStart=/home/dhofstra/.nvm/versions/node/v20.20.2/bin/node /mnt/ServerDocs/Websites/SCUBA_PhotoGallery2/server/app.js
+Restart=on-failure
+RestartSec=5
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
