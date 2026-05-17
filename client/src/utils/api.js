@@ -106,3 +106,14 @@ export function deleteDiveSite(id) {
     method: 'DELETE'
   });
 }
+
+export function updateCategoryDisplayName(categoryId, displayName) {
+  return apiRequest(`/admin/categories/${categoryId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ display_name: displayName })
+  });
+}
+
+export function fetchTotalDives() {
+  return apiRequest('/dive-sites/total-dives');
+}

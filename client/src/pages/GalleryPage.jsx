@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { fetchLibraries, fetchLibraryPhotos, fetchDiveSites, adminLogin, adminLogout, checkAdmin, triggerSync, MEDIA_BASE } from '../utils/api';
+import { fetchLibraries, fetchLibraryPhotos, fetchDiveSites, adminLogin, adminLogout, checkAdmin, triggerSync, updateCategoryDisplayName, fetchTotalDives, MEDIA_BASE } from '../utils/api';
+import faviconIcon from '/favicon-32x32.png';
+import appIcon from '/apple-touch-icon.png';
 import FullscreenViewer from '../components/FullscreenViewer';
 import DiveMapModal from '../components/DiveMapModal';
-import MapTestModal from '../components/MapTestModal';
 import DiveSiteListEditor from '../components/DiveSiteListEditor';
 import { APP_VERSION } from '../config/appConfig';
 
@@ -12,6 +13,7 @@ export default function GalleryPage() {
   const [categories, setCategories] = useState([]);
   const [photos, setPhotos] = useState([]);
   const [diveSites, setDiveSites] = useState([]);
+  const [totalDives, setTotalDives] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [viewerPhoto, setViewerPhoto] = useState(null);
@@ -24,10 +26,60 @@ export default function GalleryPage() {
   const [debugMode, setDebugMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [showMapTest, setShowMapTest] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [editingCategoryName, setEditingCategoryName] = useState('');
   const getInitialColumns = () => window.innerWidth >= 1024 ? 6 : 3;
   const [columns, setColumns] = useState(getInitialColumns);
   const passcodeRef = useRef(null);
+  const [isStandalone, setIsStandalone] = useState(
+    window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true
+  );
+  const [standalonePrompt, setStandalonePrompt] = useState(
+    window.innerWidth <= 768 && !isStandalone && !sessionStorage.getItem('standalonePromptDismissed')
+  );
+  const [isAndroid, setIsAndroid] = useState(/android/i.test(navigator.userAgent));
+  const [isIOS, setIsIOS] = useState(/iphone|ipad|ipod/i.test(navigator.userAgent));
+  const deferredPromptRef = useRef(null);
+
+  // Detect standalone mode and platform on mount
+  useEffect(() => {
+    const mobile = window.innerWidth <= 768;
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    const android = /android/i.test(navigator.userAgent);
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    setIsStandalone(standalone);
+    setIsAndroid(android);
+    setIsIOS(ios);
+    if (mobile && !standalone && !sessionStorage.getItem('standalonePromptDismissed')) {
+      setStandalonePrompt(true);
+    }
+    // Capture beforeinstallprompt for Android
+    const handleBeforeInstall = (e) => {
+      e.preventDefault();
+      deferredPromptRef.current = e;
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
+  const handleMaybeLater = () => {
+    sessionStorage.setItem('standalonePromptDismissed', 'true');
+    setStandalonePrompt(false);
+  };
+
+  const handleAddToHomeScreen = () => {
+    const deferredPrompt = deferredPromptRef.current;
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then((choiceResult) => {
+        if (choiceResult.outcome === 'accepted') {
+          localStorage.setItem('standalonePromptDismissed', 'true');
+          setStandalonePrompt(false);
+        }
+        deferredPromptRef.current = null;
+      });
+    }
+  };
 
   // Fetch libraries on mount
   useEffect(() => {
@@ -54,11 +106,11 @@ export default function GalleryPage() {
         setLoading(false);
       });
 
-    // Check admin status
-    checkAdmin().then(data => {
-      setAdmin(data.admin);
-    }).catch(() => {});
-  }, []);
+  // Check admin status
+  checkAdmin().then(data => {
+    setAdmin(data.admin);
+  }).catch(() => {});
+}, []);
 
   // Auto-focus passcode input when login bar appears
   useEffect(() => {
@@ -87,12 +139,14 @@ export default function GalleryPage() {
     setLoading(true);
     Promise.all([
       fetchLibraryPhotos(activeLibraryId),
-      fetchDiveSites()
+      fetchDiveSites(),
+      fetchTotalDives()
     ])
-      .then(([photoData, siteData]) => {
+      .then(([photoData, siteData, totalData]) => {
         setCategories(photoData.categories || []);
         setPhotos(photoData.photos || []);
         setDiveSites(siteData || []);
+        setTotalDives(totalData.total || 0);
         setLoading(false);
       })
       .catch(err => {
@@ -131,12 +185,35 @@ export default function GalleryPage() {
   }, []);
 
   const openSiteMap = useCallback((photo) => {
-    // Use dive_site_list_id for matching if available, otherwise fall back to lat_lng
-    const siteId = photo.dive_site_list_id
-      ? `dsl_${photo.dive_site_list_id}`
-      : `${photo.latitude}_${photo.longitude}`;
+    // Use dive_site_list_id for matching if available
+    if (photo.dive_site_list_id) {
+      const siteId = `dsl_${photo.dive_site_list_id}`;
+      setMapModal({ open: true, mode: 'selectedSite', activeSiteId: siteId });
+      return;
+    }
+
+    // Fallback: find the nearest dive site by coordinates
+    if (photo.latitude != null && photo.longitude != null) {
+      const nearest = diveSites.reduce((best, site) => {
+        if (site.latitude == null || site.longitude == null) return best;
+        const dLat = photo.latitude - site.latitude;
+        const dLng = photo.longitude - site.longitude;
+        const dist = dLat * dLat + dLng * dLng;
+        if (!best || dist < best.dist) return { site, dist };
+        return best;
+      }, null);
+
+      if (nearest && nearest.site && nearest.site.id) {
+        const siteId = `dsl_${nearest.site.id}`;
+        setMapModal({ open: true, mode: 'selectedSite', activeSiteId: siteId });
+        return;
+      }
+    }
+
+    // Last resort: use lat/lng key (will show all pins grey, no flyTo)
+    const siteId = `${photo.latitude}_${photo.longitude}`;
     setMapModal({ open: true, mode: 'selectedSite', activeSiteId: siteId });
-  }, []);
+  }, [diveSites]);
 
   const closeMap = useCallback(() => {
     setMapModal({ open: false, mode: 'allSites', activeSiteId: null });
@@ -201,33 +278,47 @@ export default function GalleryPage() {
               <polyline points="9 22 9 12 15 12 15 22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
             </svg>
           </a>
-          <button className="header-icon" onClick={openAllSitesMap} title="All Dive Sites">
-            <svg viewBox="0 0 64 80" width="18" height="22" aria-hidden="true" style={{display:'block'}}>
-              <defs>
-                <filter id="mappin-header" x="-20%" y="-20%" width="140%" height="140%">
-                  <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
-                </filter>
-              </defs>
-              <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-header)"/>
-              <circle cx="32" cy="28" r="22" fill="#E11913"/>
-              <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
-              <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
-              <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
-            </svg>
-          </button>
-          <button className="header-library-btn" onClick={() => setShowMapTest(true)} title="Map Testing">
-            Map Testing
-          </button>
-          <button className="header-library-btn" onClick={() => setSidebarOpen(true)} title="Libraries">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style={{display:'block',flexShrink:0}}>
-              <path d="M12 6c-2-1.2-4.2-1.9-6.7-2.1C4.6 3.8 4 4.4 4 5.1V18c0 .7.5 1.3 1.2 1.4 2.6.2 4.8.9 6.8 2.1V6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M12 6c2-1.2 4.2-1.9 6.7-2.1.7-.1 1.3.5 1.3 1.2V18c0 .7-.5 1.3-1.2 1.4-2.6.2-4.8.9-6.8 2.1V6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M12 6v15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-            </svg>
-            <span className="header-library-name">{libraries.find(l => l.id === activeLibraryId)?.display_name || 'Library'}</span>
-          </button>
+          {isStandalone && (
+            <button className="header-icon" onClick={() => window.location.reload()} title="Refresh">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style={{display:'block'}}>
+                <path d="M1 4v6h6M23 20v-6h-6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          )}
+          <span className="badge-wrapper">
+            <button className="header-library-btn lib-glow-pulse" onClick={() => setSidebarOpen(true)} title="Libraries">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style={{display:'block',flexShrink:0}}>
+                <path d="M12 6c-2-1.2-4.2-1.9-6.7-2.1C4.6 3.8 4 4.4 4 5.1V18c0 .7.5 1.3 1.2 1.4 2.6.2 4.8.9 6.8 2.1V6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M12 6c2-1.2 4.2-1.9 6.7-2.1.7-.1 1.3.5 1.3 1.2V18c0 .7-.5 1.3-1.2 1.4-2.6.2-4.8.9-6.8 2.1V6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M12 6v15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+              <span className="header-library-name">Library: {libraries.find(l => l.id === activeLibraryId)?.display_name || 'Library'}</span>
+            </button>
+            <span className="badge">{libraries.length}</span>
+          </span>
+          <span className="badge-wrapper">
+            <button className="header-icon" onClick={openAllSitesMap} title="All Dive Sites">
+              <svg viewBox="0 0 64 80" width="18" height="22" aria-hidden="true" style={{display:'block'}}>
+                <defs>
+                  <filter id="mappin-header" x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
+                  </filter>
+                </defs>
+                <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-header)"/>
+                <circle cx="32" cy="28" r="22" fill="#E11913"/>
+                <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
+                <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
+                <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
+              </svg>
+            </button>
+            <span className="badge badge-dives">{totalDives}</span>
+          </span>
         </div>
-        <h1>Dave Hofstra's SCUBA Photo Gallery</h1>
+        <h1>
+          <img src={faviconIcon} alt="" width="32" height="32" style={{verticalAlign:'middle',marginRight:'8px'}} />
+          Dave Hofstra's SCUBA Photo Gallery
+        </h1>
         <div className="header-columns-slider">
           <label className="columns-label">Columns:</label>
           <input
@@ -284,7 +375,52 @@ export default function GalleryPage() {
         <div className="gallery-content">
           {categories.map(category => (
             <section key={category.id} className="category-section">
-              <h2 className="category-title">{category.display_name || category.name}</h2>
+              <h2 className="category-title">
+                {editingCategoryId === category.id ? (
+                  <span style={{display:'inline-flex',alignItems:'center',gap:'6px'}}>
+                    <input
+                      type="text"
+                      value={editingCategoryName}
+                      onChange={e => setEditingCategoryName(e.target.value)}
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter') {
+                          try {
+                            await updateCategoryDisplayName(category.category_id, editingCategoryName);
+                            setCategories(prev => prev.map(c => c.category_id === category.category_id ? {...c, display_name: editingCategoryName} : c));
+                          } catch(err) { alert('Failed to update: ' + err.message); }
+                          setEditingCategoryId(null);
+                        }
+                        if (e.key === 'Escape') setEditingCategoryId(null);
+                      }}
+                      onBlur={() => setEditingCategoryId(null)}
+                      autoFocus
+                      style={{background:'rgba(255,255,255,.1)',border:'1px solid var(--accent)',color:'#fff',padding:'4px 8px',borderRadius:'6px',fontSize:'14px',fontWeight:'700',width:'280px'}}
+                    />
+                    <button
+                      onClick={async () => {
+                        try {
+                          await updateCategoryDisplayName(category.category_id, editingCategoryName);
+                          setCategories(prev => prev.map(c => c.category_id === category.category_id ? {...c, display_name: editingCategoryName} : c));
+                        } catch(err) { alert('Failed to update: ' + err.message); }
+                        setEditingCategoryId(null);
+                      }}
+                      style={{background:'#4caf50',border:'none',color:'#fff',width:'32px',height:'32px',borderRadius:'8px',cursor:'pointer',fontSize:'18px',fontWeight:'700',display:'grid',placeItems:'center',flexShrink:0}}
+                      title="Save title"
+                    >✓</button>
+                  </span>
+                ) : (
+                  <>
+                    {category.display_name || category.name}
+                    {admin && (
+                      <span
+                        className="category-edit-btn"
+                        onClick={() => { setEditingCategoryId(category.id); setEditingCategoryName(category.display_name || category.name); }}
+                        title="Edit category title"
+                      >✏️</span>
+                    )}
+                  </>
+                )}
+              </h2>
               <div className="photo-grid" style={{ '--cols-active': columns }}>
                 {category.photos.map((photo, idx) => {
                   const globalIndex = photos.findIndex(p => p.id === photo.id);
@@ -304,13 +440,26 @@ export default function GalleryPage() {
                         <div className="hoverMetaContainer">
                           {photo.country && (
                             <span className="hoverMetaLine">
-                              <span className="hoverIco">📍</span>
+                              <span className="hoverIco">🏝️</span>
                               {photo.country}
                             </span>
                           )}
                           {photo.dive_site_name && (
-                            <span className="hoverMetaLine">
-                              <span className="hoverIco">🤿</span>
+                            <span className="hoverMetaLine hoverMetaClickable" onClick={(e) => { e.stopPropagation(); openSiteMap(photo); }}>
+                              <span className="hoverIco">
+                                <svg viewBox="0 0 64 80" width="14" height="18" aria-hidden="true" style={{display:'block'}}>
+                                  <defs>
+                                    <filter id="mappin-hover" x="-20%" y="-20%" width="140%" height="140%">
+                                      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
+                                    </filter>
+                                  </defs>
+                                  <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-hover)"/>
+                                  <circle cx="32" cy="28" r="22" fill="#E11913"/>
+                                  <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
+                                  <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
+                                  <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
+                                </svg>
+                              </span>
                               {photo.dive_site_name}
                             </span>
                           )}
@@ -369,15 +518,6 @@ export default function GalleryPage() {
         />
       )}
 
-      {showMapTest && (
-        <MapTestModal
-          mode="allSites"
-          sites={diveSites}
-          activeDiveSiteId={null}
-          onClose={() => setShowMapTest(false)}
-        />
-      )}
-
       {showSiteListEditor && (
         <DiveSiteListEditor
           sites={[]}
@@ -406,6 +546,40 @@ export default function GalleryPage() {
           ))}
         </div>
       </aside>
+
+      {/* Standalone prompt overlay for mobile */}
+      {standalonePrompt && (
+        <div className="standalone-overlay">
+          <div className="standalone-card">
+            <div className="standalone-icon">
+              <img src={appIcon} alt="" width="120" height="120" style={{borderRadius:'18px',boxShadow:'0 4px 16px rgba(0,0,0,.5)'}} />
+            </div>
+            <h2 className="standalone-title">Install SCUBA Photo Gallery</h2>
+            <p className="standalone-message">
+              This app is <strong>much better</strong> when added as an app icon to your mobile home screen. Please add it and launch from there!
+            </p>
+            <div className="standalone-buttons">
+              <button className="standalone-btn standalone-btn-later" onClick={handleMaybeLater}>
+                Maybe Later
+              </button>
+              {isAndroid && (
+                <button className="standalone-btn standalone-btn-install" onClick={handleAddToHomeScreen}>
+                  Add to Home Screen
+                </button>
+              )}
+              {isIOS && (
+                <button className="standalone-btn standalone-btn-install" onClick={() => {}}>
+                  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style={{display:'inline-block',verticalAlign:'middle',marginRight:'6px',fill:'currentColor'}}>
+                    <path d="M12 2L8 6h3v7h2V6h3l-4-4z"/>
+                    <path d="M20 11v7H4v-7H2v7c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-7h-2z"/>
+                  </svg>
+                  Tap Share icon → "Add to Home Screen"
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="version-footer">
         <span className="debug-hint">debug: <a href="#" className="debug-link" onClick={(e) => { e.preventDefault(); setShowAdminLogin(prev => !prev); }}>d</a> key</span>

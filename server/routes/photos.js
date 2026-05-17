@@ -30,14 +30,16 @@ router.get('/libraries/:libraryId/photos', (req, res) => {
         p.housing,
         p.lighting,
         p.description,
-        p.latitude,
-        p.longitude,
-        p.dive_count,
+        COALESCE(p.latitude, dsl.latitude) AS latitude,
+        COALESCE(p.longitude, dsl.longitude) AS longitude,
+        COALESCE(p.country, dsl.city_island) AS country,
+        dsl.dive_count AS dive_count,
         p.sort_order,
         p.metadata_complete,
         p.dive_site_list_id,
         c.id AS category_id,
         c.name AS category_name,
+        c.display_name AS category_display_name,
         c.sort_order AS category_sort_order,
         ds.id AS dive_site_id,
         ds.name AS dive_site,
@@ -57,8 +59,8 @@ router.get('/libraries/:libraryId/photos', (req, res) => {
     photos.forEach(photo => {
       const catName = photo.category_name || 'Uncategorized';
       if (!grouped[catName]) {
-        // Strip leading number prefix (e.g., "01_Fish" -> "Fish", "05_Invertebrates - Non-Crustaceans" -> "Invertebrates - Non-Crustaceans")
-        const displayName = catName.replace(/^\d{2}_/, '');
+        // Use custom display_name from DB if set, otherwise strip leading number prefix
+        const displayName = photo.category_display_name || catName.replace(/^\d{2}_/, '');
         grouped[catName] = {
           category_id: photo.category_id,
           category_name: catName,
@@ -106,9 +108,10 @@ router.get('/photos/:photoId', (req, res) => {
         p.housing,
         p.lighting,
         p.description,
-        p.latitude,
-        p.longitude,
-        p.dive_count,
+        COALESCE(p.latitude, dsl.latitude) AS latitude,
+        COALESCE(p.longitude, dsl.longitude) AS longitude,
+        COALESCE(p.country, dsl.city_island) AS country,
+        dsl.dive_count AS dive_count,
         p.sort_order,
         p.metadata_complete,
         p.dive_site_list_id,
@@ -116,6 +119,7 @@ router.get('/photos/:photoId', (req, res) => {
         p.updated_at,
         c.id AS category_id,
         c.name AS category_name,
+        c.display_name AS category_display_name,
         ds.id AS dive_site_id,
         ds.name AS dive_site_name,
         dsl.dive_site_name,
@@ -149,8 +153,8 @@ router.put('/photos/:photoId', (req, res) => {
     const db = getDb();
     const { photoId } = req.params;
     const {
-      title, country, species, camera_body, lens, housing, lighting,
-      description, latitude, longitude, dive_count, dive_site_id, dive_site_list_id, sort_order
+      title, species, camera_body, lens, lighting,
+      description, dive_site_list_id, sort_order
     } = req.body;
 
     const existing = db.prepare('SELECT id FROM photos WHERE id = ?').get(photoId);
@@ -158,20 +162,22 @@ router.put('/photos/:photoId', (req, res) => {
       return res.status(404).json({ error: 'Photo not found' });
     }
 
+    // country, dive_count, lat/lng, housing are no longer stored on photos —
+    // they come from the dive_site_list relationship. Always set them to NULL.
     db.prepare(`
       UPDATE photos SET
         title = COALESCE(?, title),
-        country = COALESCE(?, country),
+        country = NULL,
         species = COALESCE(?, species),
         camera_body = COALESCE(?, camera_body),
         lens = COALESCE(?, lens),
-        housing = COALESCE(?, housing),
+        housing = NULL,
         lighting = COALESCE(?, lighting),
         description = COALESCE(?, description),
-        latitude = COALESCE(?, latitude),
-        longitude = COALESCE(?, longitude),
-        dive_count = COALESCE(?, dive_count),
-        dive_site_id = COALESCE(?, dive_site_id),
+        latitude = NULL,
+        longitude = NULL,
+        dive_count = NULL,
+        dive_site_id = NULL,
         dive_site_list_id = COALESCE(?, dive_site_list_id),
         sort_order = COALESCE(?, sort_order),
         metadata_complete = CASE
@@ -181,12 +187,33 @@ router.put('/photos/:photoId', (req, res) => {
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
-      title, country, species, camera_body, lens, housing, lighting,
-      description, latitude, longitude, dive_count, dive_site_id, dive_site_list_id, sort_order,
-      title, country, species, photoId
+      title, species, camera_body, lens, lighting,
+      description, dive_site_list_id, sort_order,
+      title, species, camera_body, photoId
     );
 
-    const updated = db.prepare('SELECT * FROM photos WHERE id = ?').get(photoId);
+    // Return the updated photo with dive site name joined and derived fields from dive_site_list
+    const updated = db.prepare(`
+      SELECT
+        p.id, p.filename, p.relative_path, p.original_path,
+        p.thumbnail_path, p.display_path,
+        p.title,
+        COALESCE(p.country, dsl.city_island) AS country,
+        p.species,
+        p.camera_body, p.lens, p.lighting,
+        p.description,
+        COALESCE(p.latitude, dsl.latitude) AS latitude,
+        COALESCE(p.longitude, dsl.longitude) AS longitude,
+        dsl.dive_count AS dive_count,
+        p.sort_order, p.metadata_complete,
+        p.dive_site_list_id, p.created_at, p.updated_at,
+        c.id AS category_id, c.name AS category_name,
+        dsl.dive_site_name, dsl.city_island, dsl.country_region
+      FROM photos p
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN dive_site_list dsl ON p.dive_site_list_id = dsl.id
+      WHERE p.id = ?
+    `).get(photoId);
     res.json(updated);
   } catch (err) {
     console.error('Error updating photo:', err);

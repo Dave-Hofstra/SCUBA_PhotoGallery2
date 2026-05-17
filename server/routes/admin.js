@@ -95,4 +95,53 @@ router.post('/sync', async (req, res) => {
   }
 });
 
+// PUT /api/admin/categories/:categoryId
+// Update a category's display_name and write to CustomTitle.txt in the category folder
+router.put('/categories/:categoryId', (req, res) => {
+  if (!req.session || !req.session.admin) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const db = getDb();
+    const { categoryId } = req.params;
+    const { display_name } = req.body;
+
+    if (!display_name || typeof display_name !== 'string') {
+      return res.status(400).json({ error: 'display_name is required' });
+    }
+
+    // Get the category to find its folder path
+    const category = db.prepare(`
+      SELECT c.id, c.name, c.library_id, l.path AS library_path
+      FROM categories c
+      JOIN libraries l ON c.library_id = l.id
+      WHERE c.id = ?
+    `).get(categoryId);
+
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Update the database
+    db.prepare('UPDATE categories SET display_name = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(display_name, categoryId);
+
+    // Write to CustomTitle.txt in the category folder
+    const categoryPath = path.join(category.library_path, category.name);
+    const customTitlePath = path.join(categoryPath, 'CustomTitle.txt');
+    try {
+      fs.writeFileSync(customTitlePath, display_name + '\n', 'utf-8');
+    } catch (err) {
+      console.error(`Could not write CustomTitle.txt: ${err.message}`);
+      // Still return success since DB was updated
+    }
+
+    res.json({ success: true, display_name });
+  } catch (err) {
+    console.error('Error updating category:', err);
+    res.status(500).json({ error: 'Failed to update category' });
+  }
+});
+
 module.exports = router;

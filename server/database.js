@@ -116,6 +116,13 @@ function initializeSchema() {
     // Column already exists — ignore
   }
 
+  // Migrate: add display_name column to categories
+  try {
+    db.exec(`ALTER TABLE categories ADD COLUMN display_name TEXT`);
+  } catch (e) {
+    // Column already exists — ignore
+  }
+
   return db;
 }
 

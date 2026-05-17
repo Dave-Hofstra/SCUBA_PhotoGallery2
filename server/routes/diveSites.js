@@ -31,4 +31,17 @@ router.get('/', (req, res) => {
   }
 });
 
+// GET /api/dive-sites/total-dives
+// Returns the total sum of dive_count across all dive sites
+router.get('/total-dives', (req, res) => {
+  try {
+    const db = getDb();
+    const result = db.prepare('SELECT COALESCE(SUM(dive_count), 0) AS total FROM dive_site_list').get();
+    res.json({ total: result.total });
+  } catch (err) {
+    console.error('Error fetching total dives:', err);
+    res.status(500).json({ error: 'Failed to fetch total dives' });
+  }
+});
+
 module.exports = router;

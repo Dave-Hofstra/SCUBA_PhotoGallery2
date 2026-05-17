@@ -95,6 +95,22 @@ function scanCategory(db, libraryId, categoryName, categoryPath, imageExts, resu
     return { found: 0, registered: 0, skipped: 0 };
   }
 
+  // Read CustomTitle.txt if it exists in the category folder
+  let customTitle = null;
+  const customTitlePath = path.join(categoryPath, 'CustomTitle.txt');
+  try {
+    if (fs.existsSync(customTitlePath)) {
+      const content = fs.readFileSync(customTitlePath, 'utf-8').trim();
+      const firstLine = content.split('\n')[0].trim();
+      if (firstLine) {
+        customTitle = firstLine;
+        console.log(`    Custom title found: "${customTitle}"`);
+      }
+    }
+  } catch (err) {
+    console.log(`    Could not read CustomTitle.txt: ${err.message}`);
+  }
+
   // Ensure category exists in database
   let category = db.prepare(
     'SELECT id FROM categories WHERE library_id = ? AND name = ?'
@@ -102,13 +118,18 @@ function scanCategory(db, libraryId, categoryName, categoryPath, imageExts, resu
 
   if (!category) {
     const info = db.prepare(
-      'INSERT INTO categories (library_id, name, sort_order) VALUES (?, ?, ?)'
-    ).run(libraryId, categoryName, sortOrder != null ? sortOrder : 0);
+      'INSERT INTO categories (library_id, name, sort_order, display_name) VALUES (?, ?, ?, ?)'
+    ).run(libraryId, categoryName, sortOrder != null ? sortOrder : 0, customTitle);
     category = { id: info.lastInsertRowid };
     console.log(`    Created category: ${categoryName} (id=${category.id})`);
-  } else if (sortOrder != null) {
-    // Update sort_order for existing categories to maintain correct ordering
-    db.prepare('UPDATE categories SET sort_order = ? WHERE id = ?').run(sortOrder, category.id);
+  } else {
+    // Update sort_order and display_name for existing categories
+    if (sortOrder != null) {
+      db.prepare('UPDATE categories SET sort_order = ? WHERE id = ?').run(sortOrder, category.id);
+    }
+    if (customTitle !== null) {
+      db.prepare('UPDATE categories SET display_name = ? WHERE id = ?').run(customTitle, category.id);
+    }
   }
 
   let found = 0, registered = 0, skipped = 0;

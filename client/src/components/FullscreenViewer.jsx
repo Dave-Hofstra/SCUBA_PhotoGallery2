@@ -21,6 +21,7 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
   const swipeStartX = useRef(0);
   const swipeOffset = useRef(0);
   const swipeActive = useRef(false);
+  const adminEditRef = useRef(null);
 
   useEffect(() => {
     setCurrentPhoto(photo);
@@ -51,7 +52,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     const x = fitTx.current + userTx.current;
     const y = fitTy.current + userTy.current;
     img.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
-    // Update cursor classes
     const wrap = imageWrapRef.current;
     if (wrap) {
       wrap.style.cursor = userScale.current > 1.001 ? (isPanning.current ? 'grabbing' : 'grab') : 'default';
@@ -83,7 +83,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     applyTransform();
   }, [fitToScreen, applyTransform]);
 
-  // Re-fit on image load
   useEffect(() => {
     const img = imageRef.current;
     if (!img) return;
@@ -100,7 +99,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     }
   }, [currentPhoto, fitToScreen]);
 
-  // Re-fit when info card collapses/expands (wait for CSS transition)
   useEffect(() => {
     if (imageRef.current && imageRef.current.naturalWidth > 0) {
       const timer = setTimeout(() => fitToScreen(), 350);
@@ -112,7 +110,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     let resizeTimer = null;
     const onResize = () => {
       if (imageRef.current && imageRef.current.naturalWidth > 0) {
-        // Debounce to let CSS layout settle (especially orientation changes)
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => fitToScreen(), 200);
       }
@@ -126,7 +123,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     };
   }, [fitToScreen]);
 
-  // Pointer handlers for zoom/pan/swipe
   const handlePointerDown = useCallback((e) => {
     const wrap = imageWrapRef.current;
     if (!wrap) return;
@@ -138,7 +134,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
         isPanning.current = true;
         applyTransform();
       } else {
-        // Swipe mode
         swipeActive.current = true;
         swipeOffset.current = 0;
         swipeStartX.current = e.clientX;
@@ -207,7 +202,6 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     applyTransform();
   }, [applyTransform]);
 
-  // Mouse wheel zoom (desktop, centered)
   const handleWheel = useCallback((e) => {
     e.preventDefault();
     const rect = imageWrapRef.current.getBoundingClientRect();
@@ -217,19 +211,42 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     zoomAt(centerX, centerY, factor);
   }, [zoomAt]);
 
+  // Close with unsaved changes check
+  const handleClose = useCallback(() => {
+    if (adminEditRef.current && adminEditRef.current.hasUnsavedChanges()) {
+      if (!confirm('You have unsaved changes. Discard them?')) return;
+    }
+    onClose();
+  }, [onClose]);
+
+  // Admin mode: forward navigation to AdminEditPanel
+  const handleAdminNav = useCallback((dir) => {
+    if (adminEditRef.current && adminEditRef.current.navigateTo) {
+      adminEditRef.current.navigateTo(dir);
+    }
+  }, []);
+
   const handleKeyDown = useCallback((e) => {
     switch (e.key) {
       case 'Escape':
-        onClose();
+        handleClose();
         break;
       case 'ArrowLeft':
-        if (hasPrev) onPrev();
+        if (admin) {
+          handleAdminNav('prev');
+        } else if (hasPrev) {
+          onPrev();
+        }
         break;
       case 'ArrowRight':
-        if (hasNext) onNext();
+        if (admin) {
+          handleAdminNav('next');
+        } else if (hasNext) {
+          onNext();
+        }
         break;
     }
-  }, [onClose, onPrev, onNext, hasPrev, hasNext]);
+  }, [handleClose, onPrev, onNext, hasPrev, hasNext, admin, handleAdminNav]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);
@@ -251,24 +268,25 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
   const diveSiteName = currentPhoto.dive_site_name || currentPhoto.dive_site || '';
 
   const handleSaved = (updated) => {
-    setCurrentPhoto(updated);
-    if (onPhotoUpdated) onPhotoUpdated(updated);
+    if (updated) {
+      setCurrentPhoto(updated);
+      if (onPhotoUpdated) onPhotoUpdated(updated);
+    }
   };
 
   return (
     <div className={viewerClassName}>
       <div className={`viewer-toolbar${admin ? ' admin-active' : ''}`}>
-        <button className="viewer-btn close-btn" onClick={onClose} title="Close (Esc)">
+        <button className="viewer-btn close-btn" onClick={handleClose} title="Close (Esc)">
           &times;
         </button>
         <div className="viewer-counter">
           {currentPhoto.title || currentPhoto.filename}
         </div>
         <div className="viewer-toolbar-right">
-          {/* Map button with scuba pin icon */}
           {hasLocation && (
             <button
-              className="viewer-btn viewer-map-btn"
+              className="viewer-btn viewer-map-btn viewer-glow-pulse"
               onClick={() => onMapClick && onMapClick(currentPhoto)}
               title="Show on map"
             >
@@ -286,154 +304,195 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
               </svg>
             </button>
           )}
-          {/* Zoom controls - hidden on touch devices */}
-          <button className="viewer-btn viewer-zoom-btn zoom-out-btn" onClick={() => {
-            const r = imageWrapRef.current.getBoundingClientRect();
-            zoomAt(r.width / 2, r.height / 2, 0.8);
-          }} title="Zoom Out">−</button>
-          <button className="viewer-btn viewer-zoom-btn zoom-in-btn" onClick={() => {
-            const r = imageWrapRef.current.getBoundingClientRect();
-            zoomAt(r.width / 2, r.height / 2, 1.25);
-          }} title="Zoom In">+</button>
-          <button className="viewer-btn viewer-reset-btn" onClick={fitToScreen} title="Fit / Reset">⟲</button>
-        </div>
-      </div>
-
-      {/* Prev/Next overlay buttons centered on image */}
-      <div className="viewer-image-area">
-        <button
-          className={`viewer-overlay-btn prev-overlay-btn ${!hasPrev ? 'disabled' : ''}`}
-          onClick={hasPrev ? onPrev : undefined}
-          disabled={!hasPrev}
-          title="Previous (←)"
-        >
-          ‹
-        </button>
-
-        <div
-          className="viewer-image-wrap"
-          ref={imageWrapRef}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerCancel}
-          onWheel={handleWheel}
-        >
-          <img
-            ref={imageRef}
-            className="viewer-image-zoomed"
-            src={displayUrl}
-            alt={currentPhoto.title || currentPhoto.filename}
-            draggable={false}
-          />
-        </div>
-
-        <button
-          className={`viewer-overlay-btn next-overlay-btn ${!hasNext ? 'disabled' : ''}`}
-          onClick={hasNext ? onNext : undefined}
-          disabled={!hasNext}
-          title="Next (→)"
-        >
-          ›
-        </button>
-
-        {debugMode && (
-          <div className="debug-overlay viewer-debug-overlay">
-            <span className="debug-filename">{currentPhoto.filename}</span>
-            {currentPhoto.latitude != null && currentPhoto.longitude != null && (
-              <span className="debug-location">{currentPhoto.latitude}, {currentPhoto.longitude}</span>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className={`viewer-info-card${infoCollapsed ? ' collapsed' : ''}`}>
-        <div className="viewer-info-inner">
-          <div className="viewer-info-collapse-bar" onClick={() => setInfoCollapsed(!infoCollapsed)}>
-            <span className="collapse-arrow">{infoCollapsed ? '^' : 'v'}</span>
-          </div>
-
-          <div className="info-top-row">
-            <h2 className="info-species-name">{currentPhoto.title || <em>Untitled</em>}</h2>
-            <div className="info-pills">
-              {/* Country:Site pill */}
-              {(currentPhoto.country || diveSiteName) && (
-                <span className="pill">
-                  <span className="pill-ico">📍</span>
-                  {[currentPhoto.country, diveSiteName].filter(Boolean).join(': ')}
-                </span>
-              )}
-              {/* Map pill with scuba pin icon and dive site name */}
-              {hasLocation && (
-                <span className="pill location" onClick={() => onMapClick && onMapClick(currentPhoto)} title="Show on map">
-              <svg viewBox="0 0 64 80" width="14" height="18" aria-hidden="true" style={{verticalAlign:'middle'}}>
-                <defs>
-                  <filter id="mappin-pill" x="-20%" y="-20%" width="140%" height="140%">
-                    <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
-                  </filter>
-                </defs>
-                <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-pill)"/>
-                <circle cx="32" cy="28" r="22" fill="#E11913"/>
-                <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
-                <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
-                <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
+          {!admin && (
+            <>
+              <button className="viewer-btn viewer-zoom-btn zoom-out-btn" onClick={() => {
+                const r = imageWrapRef.current.getBoundingClientRect();
+                zoomAt(r.width / 2, r.height / 2, 0.8);
+              }} title="Zoom Out">−</button>
+              <button className="viewer-btn viewer-zoom-btn zoom-in-btn" onClick={() => {
+                const r = imageWrapRef.current.getBoundingClientRect();
+                zoomAt(r.width / 2, r.height / 2, 1.25);
+              }} title="Zoom In">+</button>
+              <button className="viewer-btn viewer-reset-btn" onClick={fitToScreen} title="Fit / Reset">⟲</button>
+            </>
+          )}
+          {currentPhoto.relative_path && (
+            <a
+              className="viewer-btn viewer-download-btn"
+              href={`/photos/${currentPhoto.relative_path}`}
+              download
+              title="Download Original"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style={{display:'block'}}>
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <polyline points="7 10 12 15 17 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <line x1="12" y1="15" x2="12" y2="3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
               </svg>
-                  {diveSiteName || 'Map'}
-                </span>
-              )}
-              {/* Camera pill */}
-              {currentPhoto.camera_body && (
-                <span className="pill">
-                  <span className="pill-ico">📷</span>
-                  {currentPhoto.camera_body}
-                </span>
-              )}
-              {/* Species/size pill */}
-              {currentPhoto.species && (
-                <span className="pill">
-                  <span className="pill-ico">📏</span>
-                  {currentPhoto.species}
-                </span>
+            </a>
+          )}
+        </div>
+      </div>
+
+      {admin ? (
+        /* ADMIN MODE: side-by-side layout */
+        <div className="admin-split-layout">
+          <div className="admin-split-photo">
+            <div className="viewer-image-area" style={{ height: '100%' }}>
+              <div
+                className="viewer-image-wrap"
+                ref={imageWrapRef}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerCancel}
+                onWheel={handleWheel}
+                style={{ width: '100%', height: '100%' }}
+              >
+                <img
+                  ref={imageRef}
+                  className="viewer-image-zoomed"
+                  src={displayUrl}
+                  alt={currentPhoto.title || currentPhoto.filename}
+                  draggable={false}
+                />
+              </div>
+
+              {debugMode && (
+                <div className="debug-overlay viewer-debug-overlay">
+                  <span className="debug-filename">{currentPhoto.filename}</span>
+                  {currentPhoto.latitude != null && currentPhoto.longitude != null && (
+                    <span className="debug-location">{currentPhoto.latitude}, {currentPhoto.longitude}</span>
+                  )}
+                </div>
               )}
             </div>
           </div>
-
-          {!infoCollapsed && (
-            <>
-              {currentPhoto.description && (
-                <div className="info-description">{currentPhoto.description}</div>
-              )}
-              <div className="info-meta-list">
-                {currentPhoto.lens && (
-                  <span className="meta-item">
-                    <strong>Lens:</strong> {currentPhoto.lens}
-                  </span>
-                )}
-                {currentPhoto.housing && (
-                  <span className="meta-item">
-                    <strong>Housing:</strong> {currentPhoto.housing}
-                  </span>
-                )}
-                {currentPhoto.lighting && (
-                  <span className="meta-item">
-                    <strong>Lighting:</strong> {currentPhoto.lighting}
-                  </span>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-
-        {admin && (
-          <div className="admin-edit-section">
+          <div className="admin-split-editor">
             <AdminEditPanel
+              ref={adminEditRef}
               photo={currentPhoto}
               onSaved={handleSaved}
               onCancel={() => {}}
+              onNavigate={onPrev}
+              onNavigateNext={onNext}
+              hasPrev={hasPrev}
+              hasNext={hasNext}
             />
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        /* NORMAL MODE: existing full-photo layout */
+        <>
+          <div className="viewer-image-area">
+            <button
+              className={`viewer-overlay-btn prev-overlay-btn ${!hasPrev ? 'disabled' : ''}`}
+              onClick={hasPrev ? onPrev : undefined}
+              disabled={!hasPrev}
+              title="Previous (←)"
+            >‹</button>
+
+            <div
+              className="viewer-image-wrap"
+              ref={imageWrapRef}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerCancel}
+              onWheel={handleWheel}
+            >
+              <img
+                ref={imageRef}
+                className="viewer-image-zoomed"
+                src={displayUrl}
+                alt={currentPhoto.title || currentPhoto.filename}
+                draggable={false}
+              />
+            </div>
+
+            <button
+              className={`viewer-overlay-btn next-overlay-btn ${!hasNext ? 'disabled' : ''}`}
+              onClick={hasNext ? onNext : undefined}
+              disabled={!hasNext}
+              title="Next (→)"
+            >›</button>
+
+            {debugMode && (
+              <div className="debug-overlay viewer-debug-overlay">
+                <span className="debug-filename">{currentPhoto.filename}</span>
+                {currentPhoto.latitude != null && currentPhoto.longitude != null && (
+                  <span className="debug-location">{currentPhoto.latitude}, {currentPhoto.longitude}</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className={`viewer-info-card${infoCollapsed ? ' collapsed' : ''}`}>
+            <div className="viewer-info-inner">
+              <div className="viewer-info-collapse-bar viewer-glow-pulse" onClick={() => setInfoCollapsed(!infoCollapsed)}>
+                <span className="collapse-arrow">{infoCollapsed ? '^' : 'v'}</span>
+              </div>
+
+              <div className="info-top-row">
+                <h2 className="info-species-name">{currentPhoto.title || <em>Untitled</em>}</h2>
+                <div className="info-pills">
+                  {currentPhoto.country && (
+                    <span className="pill">
+                      <span className="pill-ico">🏝️</span>
+                      {currentPhoto.country}
+                    </span>
+                  )}
+                  {hasLocation && (
+                    <span className="pill location" onClick={() => onMapClick && onMapClick(currentPhoto)} title="Show on map">
+                      <svg viewBox="0 0 64 80" width="14" height="18" aria-hidden="true" style={{verticalAlign:'middle'}}>
+                        <defs>
+                          <filter id="mappin-pill" x="-20%" y="-20%" width="140%" height="140%">
+                            <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
+                          </filter>
+                        </defs>
+                        <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-pill)"/>
+                        <circle cx="32" cy="28" r="22" fill="#E11913"/>
+                        <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
+                        <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
+                        <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
+                      </svg>
+                      {diveSiteName || 'Map'}
+                    </span>
+                  )}
+                  {currentPhoto.camera_body && (
+                    <span className="pill">
+                      <span className="pill-ico">📷</span>
+                      {currentPhoto.camera_body}
+                    </span>
+                  )}
+                  {currentPhoto.species && (
+                    <span className="pill">
+                      <span className="pill-ico">📏</span>
+                      {currentPhoto.species}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {!infoCollapsed && (
+                <>
+                  {currentPhoto.description && (
+                    <div className="info-description">{currentPhoto.description}</div>
+                  )}
+                  <div className="info-meta-list">
+                    {currentPhoto.lens && (
+                      <span className="meta-item"><strong>Lens:</strong> {currentPhoto.lens}</span>
+                    )}
+                    {currentPhoto.lighting && (
+                      <span className="meta-item"><strong>Lighting:</strong> {currentPhoto.lighting}</span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
