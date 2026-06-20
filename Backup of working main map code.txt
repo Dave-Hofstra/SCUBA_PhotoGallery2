@@ -1,16 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
-import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
-import { VECTOR_STYLE as MAP_STYLE, DEFAULT_CENTER as MAP_CENTER, DEFAULT_ZOOM as MAP_ZOOM } from '../config/mapConfig';
-
 export default function DiveMapModal({ mode, sites, activeDiveSiteId, onClose }) {
   const mapContainer = useRef(null);
   const mapInstance = useRef(null);
-  const markersRef = useRef([]);
   const initialViewRef = useRef(null);
-  const isDirectModeRef = useRef(false);
   const [selectedCity, setSelectedCity] = useState(null);
   const [zoomLevel, setZoomLevel] = useState(MAP_ZOOM);
+  const isDirectModeRef = useRef(false);
+  const markersRef = useRef([]);
 
   // Extract unique city_island values for sidebar (with total dive counts)
   const cities = useMemo(() => {
@@ -55,8 +50,26 @@ export default function DiveMapModal({ mode, sites, activeDiveSiteId, onClose })
         totalDives: c.totalDives,
         siteCount: c.count
       }))
-      // Sort by totalDives ascending so higher dive counts render on top (later = on top)
-      .sort((a, b) => a.totalDives - b.totalDives);
+      .sort((a, b) => {
+        // Ensure specific render order for overlapping pins (later = on top)
+        const aLower = a.name.toLowerCase();
+        const bLower = b.name.toLowerCase();
+        const aIsBonaire = aLower.includes('bonaire');
+        const bIsBonaire = bLower.includes('bonaire');
+        const aIsCuracao = aLower.includes('curacao');
+        const bIsCuracao = bLower.includes('curacao');
+        const aIsCozumel = aLower.includes('cozumel');
+        const bIsCozumel = bLower.includes('cozumel');
+        const aIsQuintanaRoo = aLower.includes('quintana roo');
+        const bIsQuintanaRoo = bLower.includes('quintana roo');
+        // Cozumel should be on top of Quintana Roo
+        if (aIsQuintanaRoo && bIsCozumel) return -1;
+        if (aIsCozumel && bIsQuintanaRoo) return 1;
+        // Bonaire should be on top of Curacao
+        if (aIsCuracao && bIsBonaire) return -1;
+        if (aIsBonaire && bIsCuracao) return 1;
+        return a.name.localeCompare(b.name);
+      });
   }, [sites]);
 
   useEffect(() => {
@@ -66,7 +79,7 @@ export default function DiveMapModal({ mode, sites, activeDiveSiteId, onClose })
       container: mapContainer.current,
       style: MAP_STYLE,
       center: MAP_CENTER,
-      zoom: 0.5,
+      zoom: MAP_ZOOM,
       attributionControl: true
     });
 
@@ -204,24 +217,17 @@ export default function DiveMapModal({ mode, sites, activeDiveSiteId, onClose })
         }
       });
 
-      // Smoothly fly to the bounds that encompass all dive sites
+      // Fit bounds
       map.once('idle', () => {
         if (!bounds.isEmpty()) {
           map.resize();
-          const camera = map.cameraForBounds(bounds, { padding: 80, maxZoom: 10 });
-          if (camera) {
-            map.flyTo({
-              center: camera.center,
-              zoom: camera.zoom,
-              duration: 1200
-            });
-            map.once('moveend', () => {
-              initialViewRef.current = {
-                center: map.getCenter(),
-                zoom: map.getZoom()
-              };
-            });
-          }
+          map.fitBounds(bounds, { padding: 80, maxZoom: 10 });
+          map.once('moveend', () => {
+            initialViewRef.current = {
+              center: map.getCenter(),
+              zoom: map.getZoom()
+            };
+          });
         } else {
           initialViewRef.current = {
             center: map.getCenter(),
@@ -326,13 +332,3 @@ export default function DiveMapModal({ mode, sites, activeDiveSiteId, onClose })
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-          <div ref={mapContainer} className="map-container">
-            <div className="map-zoom-indicator">Zoom: {zoomLevel.toFixed(1)}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}

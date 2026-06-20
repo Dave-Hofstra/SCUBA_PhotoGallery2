@@ -6,9 +6,15 @@ const morgan = require('morgan');
 const session = require('express-session');
 const path = require('path');
 const { initializeSchema } = require('./database');
+const SQLiteSessionStore = require('./services/sessionStore');
+const { ensureLoginAttemptsTable } = require('./services/loginRateLimit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Trust proxy — required when running behind nginx reverse proxy
+// Ensures req.protocol/req.secure reflect the original HTTPS connection
+app.set('trust proxy', 1);
 
 // Middleware
 app.use(cors({
@@ -18,16 +24,17 @@ app.use(cors({
 app.use(express.json());
 app.use(morgan('dev'));
 
-// Session
+// Session — stored in SQLite for persistence across container restarts
 app.use(session({
+  store: new SQLiteSessionStore(),
   secret: process.env.SESSION_SECRET || 'scuba-gallery-dev-secret-change-in-production',
   resave: false,
-  saveUninitialized: false,
+  saveUninitialized: true,
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    sameSite: 'strict',
+    maxAge: 365 * 24 * 60 * 60 * 1000 // 1 year — long-lived for returning visitor tracking
   }
 }));
 
@@ -49,22 +56,16 @@ app.use('/api/dive-sites', require('./routes/diveSites'));
 app.use('/api/dive-site-list', require('./routes/diveSiteList'));
 app.use('/api/admin', require('./routes/admin'));
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Error handling
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // Initialize database schema on startup
-try {
-  initializeSchema();
-  console.log('Database schema initialized');
-} catch (err) {
-  console.error('Failed to initialize database schema:', err);
-  process.exit(1);
-}
+initializeSchema();
+ensureLoginAttemptsTable();
 
-app.listen(PORT, () => {
-  console.log(`SCUBA Photo Gallery server running on port ${PORT}`);
-  console.log(`Photos path: ${photosPath}`);
-  console.log(`Cache path: ${cachePath}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`SCUBA Photo Gallery 2 API running on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
 });

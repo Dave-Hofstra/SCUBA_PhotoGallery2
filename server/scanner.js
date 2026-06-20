@@ -24,7 +24,7 @@ function scanLibrary(libraryName, libraryPath) {
   };
 
   // Supported image extensions
-  const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+  const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']);
 
   // Ensure library exists in database
   let library = db.prepare('SELECT id FROM libraries WHERE name = ?').get(libraryName);
@@ -136,13 +136,39 @@ function scanCategory(db, libraryId, categoryName, categoryPath, imageExts, resu
 
   files.forEach(filename => {
     found++;
-    const relativePath = path.join(categoryName, filename);
-    const fullPath = path.join(categoryPath, filename);
+    const ext = path.extname(filename).toLowerCase();
+    let actualFilename = filename;
+    let actualFullPath = path.join(categoryPath, filename);
+    let actualRelativePath = path.join(categoryName, filename);
+
+    // Auto-convert HEIC/HEIF to JPG
+    if (ext === '.heic' || ext === '.heif') {
+      const jpgFilename = path.parse(filename).name + '.JPG';
+      const jpgFullPath = path.join(categoryPath, jpgFilename);
+      const jpgRelativePath = path.join(categoryName, jpgFilename);
+
+      if (!fs.existsSync(jpgFullPath)) {
+        try {
+          const sharp = require('sharp');
+          sharp(actualFullPath)
+            .jpeg({ quality: 95 })
+            .toFileSync(jpgFullPath);
+          console.log(`      Converted HEIC to JPG: ${jpgFilename}`);
+        } catch (err) {
+          results.errors.push(`Failed to convert HEIC ${filename}: ${err.message}`);
+          return; // Skip this file
+        }
+      }
+
+      actualFilename = jpgFilename;
+      actualFullPath = jpgFullPath;
+      actualRelativePath = jpgRelativePath;
+    }
 
     // Check if photo already registered
     const existing = db.prepare(
       'SELECT id FROM photos WHERE library_id = ? AND relative_path = ?'
-    ).get(libraryId, relativePath);
+    ).get(libraryId, actualRelativePath);
 
     if (existing) {
       skipped++;
@@ -150,14 +176,14 @@ function scanCategory(db, libraryId, categoryName, categoryPath, imageExts, resu
     }
 
     // Register the photo
-    const title = path.parse(filename).name;
+    const title = path.parse(actualFilename).name;
     db.prepare(`
       INSERT INTO photos (library_id, category_id, filename, relative_path, original_path, title, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(libraryId, category.id, filename, relativePath, fullPath, title, found);
+    `).run(libraryId, category.id, actualFilename, actualRelativePath, actualFullPath, title, found);
 
     registered++;
-    console.log(`      Registered: ${filename}`);
+    console.log(`      Registered: ${actualFilename}`);
   });
 
   return { found, registered, skipped };

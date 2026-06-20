@@ -2,11 +2,13 @@
 /**
  * Import dive sites from dlexch JSON file and CSV dive log.
  *
- * Usage:
- *   node server/scripts/import-dive-sites.js
+ * Can be used as:
+ *   CLI:  node server/scripts/import-dive-sites.js [dlexchPath] [csvPath]
+ *   Module: const { runImport } = require('./scripts/import-dive-sites');
+ *            runImport(dlexchPath, csvPath)
  *
  * Reads:
- *   - Share Dive Site 2026-05-06 17.31.40.dlexch (JSON) — master list of all dive sites
+ *   - Share Dive Site .dlexch (JSON) — master list of all dive sites
  *   - David Hofstra csv all dives.csv (CSV) — dive log with City/Island and Country/Region
  *
  * Writes to:
@@ -18,12 +20,12 @@ const fs = require('fs');
 const { getDb, initializeSchema } = require('../database');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
-const DIVE_LOG_DIR = path.join(PROJECT_ROOT, 'DiveLog_Import');
+const DIVE_LOG_DIR = path.join(PROJECT_ROOT, 'Extra_Assets', 'DiveLog_Imports');
 
-// Accept file paths as command-line arguments, or use defaults from DiveLog_Import folder
+// Accept file paths as command-line arguments, or use defaults from Extra_Assets/DiveLog_Imports folder
 const args = process.argv.slice(2);
-const DLEXCH_PATH = args[0] || path.join(DIVE_LOG_DIR, 'Share Dive Site 2026-05-06 17.31.40.dlexch');
-const CSV_PATH = args[1] || path.join(DIVE_LOG_DIR, 'David Hofstra csv all dives - 2026-05-09.csv');
+const DEFAULT_DLEXCH_PATH = path.join(DIVE_LOG_DIR, 'Share Dive Site 2026-05-06 17.31.40.dlexch');
+const DEFAULT_CSV_PATH = path.join(DIVE_LOG_DIR, 'David Hofstra csv all dives - 2026-05-09.csv');
 
 function parseDlexch(filePath) {
   const raw = fs.readFileSync(filePath, 'utf-8');
@@ -119,42 +121,62 @@ function parseCsvLine(line) {
   return result;
 }
 
-async function main() {
-  console.log('=== Import Dive Sites ===\n');
+/**
+ * Run the dive site import programmatically.
+ * @param {string} [dlexchPath] - Path to .dlexch file (uses default if omitted)
+ * @param {string} [csvPath] - Path to .csv file (uses default if omitted)
+ * @returns {object} { inserted, matched, unmatched, errors }
+ */
+function runImport(dlexchPath, csvPath) {
+  const result = { inserted: 0, matched: 0, unmatched: [], errors: [] };
 
   // Initialize database
   initializeSchema();
   const db = getDb();
 
-  // Check if files exist
-  if (!fs.existsSync(DLEXCH_PATH)) {
-    console.error(`ERROR: dlexch file not found at: ${DLEXCH_PATH}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(CSV_PATH)) {
-    console.error(`ERROR: CSV file not found at: ${CSV_PATH}`);
-    process.exit(1);
+  const resolvedDlexch = dlexchPath || DEFAULT_DLEXCH_PATH;
+  const resolvedCsv = csvPath || DEFAULT_CSV_PATH;
+
+  // Check if at least one file exists
+  const dlexchExists = fs.existsSync(resolvedDlexch);
+  const csvExists = fs.existsSync(resolvedCsv);
+
+  if (!dlexchExists && !csvExists) {
+    result.errors.push('No input files found');
+    return result;
   }
 
-  // Parse dlexch
-  console.log('Reading dlexch file...');
-  const dlexchSites = parseDlexch(DLEXCH_PATH);
-  console.log(`  Found ${dlexchSites.length} dive sites in dlexch file\n`);
+  // Parse dlexch if it exists
+  let dlexchSites = [];
+  if (dlexchExists) {
+    try {
+      dlexchSites = parseDlexch(resolvedDlexch);
+    } catch (err) {
+      result.errors.push(`Failed to parse dlexch file: ${err.message}`);
+    }
+  }
 
-  // Parse CSV
-  console.log('Reading CSV file...');
-  const csvLookup = parseCsv(CSV_PATH);
-  console.log(`  Found ${Object.keys(csvLookup).length} unique dive sites in CSV\n`);
+  // Parse CSV if it exists
+  let csvLookup = {};
+  if (csvExists) {
+    try {
+      csvLookup = parseCsv(resolvedCsv);
+    } catch (err) {
+      result.errors.push(`Failed to parse CSV file: ${err.message}`);
+    }
+  }
+
+  // If we have no dlexch data, nothing more to do
+  if (dlexchSites.length === 0) {
+    result.errors.push('No dive sites found in dlexch file');
+    return result;
+  }
 
   // Merge and insert
   const insertStmt = db.prepare(`
     INSERT OR REPLACE INTO dive_site_list (dive_site_name, city_island, country_region, latitude, longitude, full_name, dive_count, updated_at)
     VALUES (@dive_site_name, @city_island, @country_region, @latitude, @longitude, @full_name, @dive_count, datetime('now'))
   `);
-
-  let inserted = 0;
-  let matched = 0;
-  let unmatched = [];
 
   const transaction = db.transaction(() => {
     for (const site of dlexchSites) {
@@ -164,20 +186,18 @@ async function main() {
       let diveCount = 0;
 
       if (csvData) {
-        // CSV has City/Island and Country/Region — use those
         if (csvData.city_island) cityIsland = csvData.city_island;
         countryRegion = csvData.country_region;
         diveCount = csvData.dive_count || 0;
-        matched++;
+        result.matched++;
       } else {
-        // Try to derive country from city_island
         if (site.city_island) {
           const parts = site.city_island.split(',').map(s => s.trim());
           if (parts.length >= 2) {
             countryRegion = parts[parts.length - 1];
           }
         }
-        unmatched.push(site.full_name);
+        result.unmatched.push(site.full_name);
       }
 
       insertStmt.run({
@@ -189,26 +209,47 @@ async function main() {
         full_name: site.full_name,
         dive_count: diveCount
       });
-      inserted++;
+      result.inserted++;
     }
   });
 
   transaction();
 
-  console.log(`\nResults:`);
-  console.log(`  Inserted/updated: ${inserted} dive sites`);
-  console.log(`  Matched with CSV: ${matched}`);
-  console.log(`  Unmatched: ${unmatched.length}`);
+  return result;
+}
 
-  if (unmatched.length > 0) {
+async function main() {
+  console.log('=== Import Dive Sites ===\n');
+
+  const dlexchPath = args[0] || DEFAULT_DLEXCH_PATH;
+  const csvPath = args[1] || DEFAULT_CSV_PATH;
+
+  const result = runImport(dlexchPath, csvPath);
+
+  if (result.errors.length > 0) {
+    result.errors.forEach(err => console.error(`ERROR: ${err}`));
+  }
+
+  console.log(`\nResults:`);
+  console.log(`  Inserted/updated: ${result.inserted} dive sites`);
+  console.log(`  Matched with CSV: ${result.matched}`);
+  console.log(`  Unmatched: ${result.unmatched.length}`);
+
+  if (result.unmatched.length > 0) {
     console.log('\nUnmatched dive sites (no CSV entry found):');
-    unmatched.forEach(name => console.log(`  - ${name}`));
+    result.unmatched.forEach(name => console.log(`  - ${name}`));
   }
 
   console.log('\n=== Import complete ===');
 }
 
-main().catch(err => {
-  console.error('Import failed:', err);
-  process.exit(1);
-});
+// Export for programmatic use
+module.exports = { runImport };
+
+// CLI entrypoint
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Import failed:', err);
+    process.exit(1);
+  });
+}

@@ -211,9 +211,9 @@ sudo journalctl -u scuba-gallery -f
 
 When you have new dive sites from updated CSV and dlexch files:
 
-1. Place the new files in the `DiveLog_Import/` folder with descriptive date-stamped names:
+1. Place the new files in the `Extra_Assets/DiveLog_Imports/` folder with descriptive date-stamped names:
    ```
-   DiveLog_Import/
+   Extra_Assets/DiveLog_Imports/
    ├── David Hofstra csv all dives - YYYY-MM-DD.csv
    └── Share Dive Site YYYY-MM-DD HH.MM.SS.dlexch
    ```
@@ -221,11 +221,11 @@ When you have new dive sites from updated CSV and dlexch files:
 2. Run the import script with the new file paths:
    ```bash
    node server/scripts/import-dive-sites.js \
-     "DiveLog_Import/Share Dive Site 2026-06-01 12.00.00.dlexch" \
-     "DiveLog_Import/David Hofstra csv all dives - 2026-06-01.csv"
+     "Extra_Assets/DiveLog_Imports/Share Dive Site 2026-06-01 12.00.00.dlexch" \
+     "Extra_Assets/DiveLog_Imports/David Hofstra csv all dives - 2026-06-01.csv"
    ```
 
-   Or without arguments (uses the default files in DiveLog_Import/):
+   Or without arguments (uses the default files in Extra_Assets/DiveLog_Imports/):
    ```bash
    node server/scripts/import-dive-sites.js
    ```

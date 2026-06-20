@@ -117,3 +117,74 @@ export function updateCategoryDisplayName(categoryId, displayName) {
 export function fetchTotalDives() {
   return apiRequest('/dive-sites/total-dives');
 }
+
+export function updatePhotoOrder(photoIds) {
+  return apiRequest('/admin/photos/reorder', {
+    method: 'PUT',
+    body: JSON.stringify({ photoIds })
+  });
+}
+
+export function uploadDiveData(formData) {
+  return fetch(`${API_BASE}/admin/import-dive-data`, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData
+  }).then(async response => {
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Upload failed' }));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+    return response.json();
+  });
+}
+
+// Category Divider API
+export function createCategoryDivider(categoryId, title) {
+  return apiRequest(`/admin/categories/${categoryId}/dividers`, {
+    method: 'POST',
+    body: JSON.stringify({ title })
+  });
+}
+
+export function updateCategoryDivider(dividerId, title) {
+  return apiRequest(`/admin/dividers/${dividerId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title })
+  });
+}
+
+export function deleteCategoryDivider(dividerId) {
+  return apiRequest(`/admin/dividers/${dividerId}`, {
+    method: 'DELETE'
+  });
+}
+
+export function reorderCategoryDividers(categoryId, dividerOrders) {
+  return apiRequest(`/admin/categories/${categoryId}/dividers/reorder`, {
+    method: 'PUT',
+    body: JSON.stringify({ dividerOrders })
+  });
+}
+
+// Photo view tracking
+export function markPhotoViewed(photoId) {
+  return fetch(`${API_BASE}/photos/${photoId}/view`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+}
+
+export function unmarkPhotoViewed(photoId) {
+  return fetch(`${API_BASE}/photos/${photoId}/view`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+}
+
+// Photo likes
+export function toggleLike(photoId) {
+  return apiRequest(`/photos/${photoId}/like`, {
+    method: 'POST'
+  });
+}

@@ -107,6 +107,19 @@ function initializeSchema() {
 
     CREATE INDEX IF NOT EXISTS idx_dive_sites_name ON dive_sites(name);
     CREATE INDEX IF NOT EXISTS idx_dive_site_list_name ON dive_site_list(dive_site_name);
+
+    -- New: dives table imported from the CSV dive log
+    CREATE TABLE IF NOT EXISTS dives (
+      dive_number INTEGER PRIMARY KEY,
+      dive_date TEXT,
+      dive_site TEXT,
+      city_island TEXT,
+      country_region TEXT,
+      max_depth REAL,
+      dive_time INTEGER,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Migrate: add dive_count column if it doesn't exist (for existing databases)
@@ -122,6 +135,98 @@ function initializeSchema() {
   } catch (e) {
     // Column already exists — ignore
   }
+
+  // Migrate: add photo_taken_time column to photos
+  try {
+    db.exec(`ALTER TABLE photos ADD COLUMN photo_taken_time INTEGER`);
+  } catch (e) {
+    // Column already exists — ignore
+  }
+
+  // Migrate: add dive_number column to photos
+  try {
+    db.exec(`ALTER TABLE photos ADD COLUMN dive_number INTEGER REFERENCES dives(dive_number)`);
+  } catch (e) {
+    // Column already exists — ignore
+  }
+
+  // Migrate: add linked_photo_id column to photos (for Wall Photos → All-Time linking)
+  try {
+    db.exec(`ALTER TABLE photos ADD COLUMN linked_photo_id INTEGER REFERENCES photos(id) ON DELETE SET NULL`);
+  } catch (e) {
+    // Column already exists — ignore
+  }
+
+  // Migrate: add category_dividers table
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS category_dividers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        sort_order REAL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (e) {
+    // Table already exists — ignore
+  }
+
+  // Migrate: add photo_views table (session-based viewed tracking)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS photo_views (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        photo_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        viewed_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
+        UNIQUE(photo_id, session_id)
+      )
+    `);
+  } catch (e) {
+    // Table already exists — ignore
+  }
+
+  // Migrate: add photo_likes table (session-based like tracking)
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS photo_likes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        photo_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (photo_id) REFERENCES photos(id) ON DELETE CASCADE,
+        UNIQUE(photo_id, session_id)
+      )
+    `);
+  } catch (e) {
+    // Table already exists — ignore
+  }
+
+  // Migrate: add login_attempts table for rate limiting audit
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS login_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip_address TEXT NOT NULL,
+        attempted_at TEXT DEFAULT (datetime('now')),
+        success INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+  } catch (e) { /* Table already exists — ignore */ }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address)`);
+  } catch (e) { /* ignore */ }
+
+  // Migrate: add indexes for photo_views and photo_likes
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_photo_views_photo_id ON photo_views(photo_id)`);
+  } catch (e) { /* ignore */ }
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_photo_likes_photo_id ON photo_likes(photo_id)`);
+  } catch (e) { /* ignore */ }
 
   return db;
 }

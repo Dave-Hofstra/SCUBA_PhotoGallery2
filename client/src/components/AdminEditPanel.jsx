@@ -22,12 +22,16 @@ const AdminEditPanel = forwardRef(function AdminEditPanel({ photo, onSaved, onCa
   const [showSiteListEditor, setShowSiteListEditor] = useState(false);
   const [allDiveSites, setAllDiveSites] = useState([]);
   const [saveMessage, setSaveMessage] = useState(null);
+  const [diveNumber, setDiveNumber] = useState(photo.dive_number || '');
+  const [photoTakenTime, setPhotoTakenTime] = useState(photo.photo_taken_time || '');
+  const [descriptionDirty, setDescriptionDirty] = useState(false);
   const searchRef = useRef(null);
   const dropdownRef = useRef(null);
   const formRef = useRef(photo);
   const initialLoadDone = useRef(false);
   const autoSaveTimer = useRef(null);
   const savingRef = useRef(false);
+  const descriptionRef = useRef(null);
 
   // Reset form when photo changes
   useEffect(() => {
@@ -40,11 +44,14 @@ const AdminEditPanel = forwardRef(function AdminEditPanel({ photo, onSaved, onCa
       description: photo.description || ''
     });
     setDirty(false);
+    setDescriptionDirty(false);
     setSaveMessage(null);
     setSelectedDiveSiteId(photo.dive_site_list_id || null);
     setSelectedDiveSiteName(photo.dive_site_name || '');
     setSelectedDiveSiteData(null);
     setDiveSiteSearch(photo.dive_site_name || '');
+    setDiveNumber(photo.dive_number || '');
+    setPhotoTakenTime(photo.photo_taken_time || '');
     formRef.current = photo;
   }, [photo]);
 
@@ -66,11 +73,15 @@ const AdminEditPanel = forwardRef(function AdminEditPanel({ photo, onSaved, onCa
   // Mark form as dirty when any field changes
   const handleChange = (field) => (e) => {
     setForm(prev => ({ ...prev, [field]: e.target.value }));
-    setDirty(true);
+    if (field === 'description') {
+      setDescriptionDirty(true);
+    } else {
+      setDirty(true);
+    }
     setSaveMessage(null);
   };
 
-  // Auto-save: debounce save when dirty changes to true
+  // Auto-save: debounce save when dirty changes to true (excludes description)
   useEffect(() => {
     if (!dirty) return;
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
@@ -81,6 +92,14 @@ const AdminEditPanel = forwardRef(function AdminEditPanel({ photo, onSaved, onCa
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
   }, [dirty, form, selectedDiveSiteId]);
+
+  // Save description on blur (when textarea loses focus)
+  const handleDescriptionBlur = () => {
+    if (descriptionDirty) {
+      setDescriptionDirty(false);
+      handleSave(true);
+    }
+  };
 
   // Load all dive sites for the dropdown
   useEffect(() => {
@@ -161,7 +180,9 @@ const AdminEditPanel = forwardRef(function AdminEditPanel({ photo, onSaved, onCa
         lens: form.lens || null,
         lighting: form.lighting || null,
         description: form.description || null,
-        dive_site_list_id: selectedDiveSiteId
+        dive_site_list_id: selectedDiveSiteId,
+        dive_number: diveNumber !== '' ? parseInt(diveNumber, 10) : null,
+        photo_taken_time: photoTakenTime !== '' ? parseInt(photoTakenTime, 10) : null
       };
 
       const updated = await updatePhoto(photo.id, payload);
@@ -325,11 +346,42 @@ const AdminEditPanel = forwardRef(function AdminEditPanel({ photo, onSaved, onCa
           </div>
         </div>
 
+        {/* Dive Number + Photo Taken */}
+        <div className="admin-edit-row">
+          <div className="admin-edit-field">
+            <label>Dive #</label>
+            <div className="admin-clearable-input">
+              <input type="number" value={diveNumber} onChange={e => { setDiveNumber(e.target.value); setDirty(true); setSaveMessage(null); }} placeholder="e.g. 383" min="0" />
+              {diveNumber !== '' && (
+                <button className="admin-clear-btn" onClick={() => { setDiveNumber(''); setDirty(true); setSaveMessage(null); }} tabIndex="-1" aria-label="Clear dive number">&times;</button>
+              )}
+            </div>
+          </div>
+          <div className="admin-edit-field">
+            <label>Photo Taken</label>
+            <div className="admin-clearable-input">
+              <input type="datetime-local" value={
+                photoTakenTime
+                  ? new Date(parseInt(photoTakenTime) * 1000).toISOString().slice(0, 16)
+                  : ''
+              } onChange={e => {
+                const val = e.target.value;
+                setPhotoTakenTime(val ? Math.floor(new Date(val).getTime() / 1000).toString() : '');
+                setDirty(true);
+                setSaveMessage(null);
+              }} />
+              {photoTakenTime !== '' && (
+                <button className="admin-clear-btn" onClick={() => { setPhotoTakenTime(''); setDirty(true); setSaveMessage(null); }} tabIndex="-1" aria-label="Clear photo taken time">&times;</button>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Description — fills remaining space */}
         <div className="admin-edit-row admin-edit-row-grow">
           <div className="admin-edit-field admin-edit-field-wide admin-edit-field-grow">
             <label>Description</label>
-            <textarea value={form.description} onChange={handleChange('description')} placeholder="Notes about the photo..." />
+            <textarea ref={descriptionRef} value={form.description} onChange={handleChange('description')} onBlur={handleDescriptionBlur} placeholder="Notes about the photo..." />
           </div>
         </div>
       </div>

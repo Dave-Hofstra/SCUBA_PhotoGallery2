@@ -32,4 +32,5 @@ Thumbs.db
 
 # Large binary directories (not suitable for git)
 photos/
-DiveLog_Import/
+Extra_Assets/
+server/node_modules/

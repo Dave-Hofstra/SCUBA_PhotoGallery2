@@ -1,10 +1,11 @@
-import { useEffect, useCallback, useState, useRef } from 'react';
-import { MEDIA_BASE } from '../utils/api';
+import { useEffect, useCallback, useState, useRef, useMemo } from 'react';
+import { MEDIA_BASE, markPhotoViewed, unmarkPhotoViewed, toggleLike } from '../utils/api';
 import AdminEditPanel from './AdminEditPanel';
 
-export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPrev, hasNext, onMapClick, admin, onPhotoUpdated, debugMode }) {
+export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPrev, hasNext, onMapClick, admin, onPhotoUpdated, debugMode, diveSites, currentIndex, totalPhotos, onPhotoViewed, onLikeToggle }) {
   const [infoCollapsed, setInfoCollapsed] = useState(false);
   const [currentPhoto, setCurrentPhoto] = useState(photo);
+  const dwellTimerRef = useRef(null);
 
   // Zoom/pan state
   const imageWrapRef = useRef(null);
@@ -97,7 +98,7 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
       img.addEventListener('load', onLoad);
       return () => img.removeEventListener('load', onLoad);
     }
-  }, [currentPhoto, fitToScreen]);
+  }, [currentPhoto?.id, fitToScreen]);
 
   useEffect(() => {
     if (imageRef.current && imageRef.current.naturalWidth > 0) {
@@ -227,6 +228,10 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
   }, []);
 
   const handleKeyDown = useCallback((e) => {
+    // Don't handle arrow keys when user is typing in an input/textarea
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+      return;
+    }
     switch (e.key) {
       case 'Escape':
         handleClose();
@@ -257,6 +262,48 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
     };
   }, [handleKeyDown]);
 
+  // Derive liked/likeCount directly from currentPhoto (parent updates viewerPhoto on toggle)
+  const liked = currentPhoto?.liked_by_me || false;
+  const likeCount = currentPhoto?.like_count || 0;
+
+  // 10-second dwell timer — mark photo as viewed if viewing for >=10s
+  useEffect(() => {
+    if (admin) return; // Don't track views in admin mode
+
+    dwellTimerRef.current = setTimeout(() => {
+      if (currentPhoto?.id) {
+        markPhotoViewed(currentPhoto.id).catch(() => {});
+        if (onPhotoViewed) onPhotoViewed(currentPhoto.id, true);
+        // Update local state so the toolbar viewed badge shows immediately
+        setCurrentPhoto(prev => prev ? { ...prev, viewed_by_me: true } : prev);
+      }
+    }, 10000);
+
+    return () => {
+      if (dwellTimerRef.current) {
+        clearTimeout(dwellTimerRef.current);
+        dwellTimerRef.current = null;
+      }
+    };
+  }, [currentPhoto?.id, admin, onPhotoViewed]);
+
+  // Heart like toggle handler — calls API, parent updates viewerPhoto on resolve
+  const handleLikeToggle = useCallback(async () => {
+    if (!currentPhoto?.id) return;
+    // Optimistic: immediately update parent so the viewerPhoto prop reflects the toggle
+    const nextLiked = !liked;
+    const nextCount = liked ? likeCount - 1 : likeCount + 1;
+    if (onLikeToggle) onLikeToggle(currentPhoto.id, nextLiked, nextCount);
+    try {
+      const result = await toggleLike(currentPhoto.id);
+      // Apply actual server result
+      if (onLikeToggle) onLikeToggle(currentPhoto.id, result.liked, result.count);
+    } catch (err) {
+      // Revert on failure — re-toggle back to original
+      if (onLikeToggle) onLikeToggle(currentPhoto.id, liked, likeCount);
+    }
+  }, [currentPhoto?.id, liked, likeCount, onLikeToggle]);
+
   if (!currentPhoto) return null;
 
   const displayUrl = currentPhoto.display_path
@@ -266,6 +313,13 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
   const hasLocation = currentPhoto.latitude != null && currentPhoto.longitude != null;
   const viewerClassName = `fullscreen-viewer${admin ? ' admin-active' : ''}`;
   const diveSiteName = currentPhoto.dive_site_name || currentPhoto.dive_site || '';
+
+  // Look up the matching dive site and its dive count
+  const matchingSite = useMemo(() => {
+    if (!diveSites || !currentPhoto.dive_site_list_id) return null;
+    return diveSites.find(s => s.id === currentPhoto.dive_site_list_id) || null;
+  }, [diveSites, currentPhoto.dive_site_list_id]);
+  const diveSiteDiveCount = matchingSite ? matchingSite.dive_count || 0 : 0;
 
   const handleSaved = (updated) => {
     if (updated) {
@@ -277,60 +331,116 @@ export default function FullscreenViewer({ photo, onClose, onPrev, onNext, hasPr
   return (
     <div className={viewerClassName}>
       <div className={`viewer-toolbar${admin ? ' admin-active' : ''}`}>
-        <button className="viewer-btn close-btn" onClick={handleClose} title="Close (Esc)">
-          &times;
-        </button>
-        <div className="viewer-counter">
-          {currentPhoto.title || currentPhoto.filename}
-        </div>
-        <div className="viewer-toolbar-right">
-          {hasLocation && (
-            <button
-              className="viewer-btn viewer-map-btn viewer-glow-pulse"
-              onClick={() => onMapClick && onMapClick(currentPhoto)}
-              title="Show on map"
-            >
-              <svg viewBox="0 0 64 80" width="18" height="22" aria-hidden="true" style={{display:'block'}}>
-                <defs>
-                  <filter id="mappin-toolbar" x="-20%" y="-20%" width="140%" height="140%">
-                    <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
-                  </filter>
-                </defs>
-                <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-toolbar)"/>
-                <circle cx="32" cy="28" r="22" fill="#E11913"/>
-                <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
-                <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
-                <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
-              </svg>
+        {/* Row 1: Close + Species Name (centered) */}
+        <div className="viewer-toolbar-row viewer-toolbar-row1">
+          <div className="viewer-toolbar-left">
+            <button className="viewer-btn close-btn" onClick={handleClose} title="Close (Esc)">
+              &times;
             </button>
-          )}
-          {!admin && (
-            <>
-              <button className="viewer-btn viewer-zoom-btn zoom-out-btn" onClick={() => {
-                const r = imageWrapRef.current.getBoundingClientRect();
-                zoomAt(r.width / 2, r.height / 2, 0.8);
-              }} title="Zoom Out">−</button>
-              <button className="viewer-btn viewer-zoom-btn zoom-in-btn" onClick={() => {
-                const r = imageWrapRef.current.getBoundingClientRect();
-                zoomAt(r.width / 2, r.height / 2, 1.25);
-              }} title="Zoom In">+</button>
-              <button className="viewer-btn viewer-reset-btn" onClick={fitToScreen} title="Fit / Reset">⟲</button>
-            </>
-          )}
-          {currentPhoto.relative_path && (
-            <a
-              className="viewer-btn viewer-download-btn"
-              href={`/photos/${currentPhoto.relative_path}`}
-              download
-              title="Download Original"
-            >
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style={{display:'block'}}>
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-                <polyline points="7 10 12 15 17 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-                <line x1="12" y1="15" x2="12" y2="3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              </svg>
-            </a>
-          )}
+          </div>
+          <div className="viewer-counter">
+            {currentPhoto.title || currentPhoto.filename} {totalPhotos !== undefined ? `(${(currentIndex ?? 0) + 1} of ${totalPhotos})` : ''}
+          </div>
+          <div className="viewer-toolbar-row1-spacer"></div>
+        </div>
+        {/* Row 2: Action buttons (heart, viewed, flyto, zoom, fit, download) */}
+        <div className="viewer-toolbar-row viewer-toolbar-row2">
+          <div className="viewer-toolbar-actions">
+            {!admin && (
+              <>
+                <span className={`toolbar-heart-btn ${liked ? 'liked' : ''}`} onClick={handleLikeToggle} title={liked ? 'Unlike' : 'Like'}>
+                  <span className="toolbar-heart-ico">{liked ? '❤️' : '🤍'}</span>
+                  <span className="toolbar-like-count">{likeCount}</span>
+                </span>
+                <span
+                  className={`toolbar-viewed-badge${currentPhoto.viewed_by_me ? '' : ' not-viewed'}`}
+                  onClick={async () => {
+                    if (!currentPhoto?.id) return;
+                    if (currentPhoto.viewed_by_me) {
+                      try { await unmarkPhotoViewed(currentPhoto.id); } catch {}
+                      setCurrentPhoto(prev => prev ? { ...prev, viewed_by_me: false } : prev);
+                      if (onPhotoViewed) onPhotoViewed(currentPhoto.id, false);
+                      if (dwellTimerRef.current) {
+                        clearTimeout(dwellTimerRef.current);
+                      }
+                      dwellTimerRef.current = setTimeout(async () => {
+                        if (currentPhoto?.id) {
+                          try { await markPhotoViewed(currentPhoto.id); } catch {}
+                          setCurrentPhoto(prev => prev ? { ...prev, viewed_by_me: true } : prev);
+                          if (onPhotoViewed) onPhotoViewed(currentPhoto.id);
+                        }
+                        dwellTimerRef.current = null;
+                      }, 10000);
+                    } else {
+                      try { await markPhotoViewed(currentPhoto.id); } catch {}
+                      setCurrentPhoto(prev => prev ? { ...prev, viewed_by_me: true } : prev);
+                      if (onPhotoViewed) onPhotoViewed(currentPhoto.id, true);
+                      if (dwellTimerRef.current) {
+                        clearTimeout(dwellTimerRef.current);
+                        dwellTimerRef.current = null;
+                      }
+                    }
+                  }}
+                  title={currentPhoto.viewed_by_me ? 'Click to unmark (starts 10s timer to mark again)' : 'Click to mark as viewed'}
+                >
+                  {currentPhoto.viewed_by_me ? '✓ Viewed' : '◯ Unviewed'}
+                </span>
+              </>
+            )}
+            {hasLocation && (
+              <span className="viewer-map-badge-wrap">
+                <button
+                  className="viewer-map-site-btn"
+                  onClick={() => onMapClick && onMapClick(currentPhoto)}
+                  title="Fly to dive site"
+                >
+                  <svg viewBox="0 0 64 80" width="14" height="18" aria-hidden="true" style={{display:'block',flexShrink:0}}>
+                    <defs>
+                      <filter id="mappin-flyto" x="-20%" y="-20%" width="140%" height="140%">
+                        <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000000" flood-opacity="0.28"/>
+                      </filter>
+                    </defs>
+                    <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="#8B140E" filter="url(#mappin-flyto)"/>
+                    <circle cx="32" cy="28" r="22" fill="#E11913"/>
+                    <path d="M15.7 13.2 L50.8 42.5 L45.7 48.6 L10.6 19.3 Z" fill="#FFF9E8"/>
+                    <path d="M15 25 C17 13 27 8 38 10 C27 11 18 17 15 25 Z" fill="#FFFFFF" opacity="0.18"/>
+                    <path d="M32 76 C32 76 8 45 8 28 C8 14.745 18.745 4 32 4 C45.255 4 56 14.745 56 28 C56 45 32 76 32 76 Z" fill="none" stroke="#5E0D09" stroke-width="3"/>
+                  </svg>
+                  <span className="viewer-map-site-label">FlyTo Site</span>
+                </button>
+                {diveSiteDiveCount > 0 && (
+                  <span className="viewer-map-site-badge">{diveSiteDiveCount}</span>
+                )}
+              </span>
+            )}
+            {!admin && (
+              <>
+                <button className="viewer-btn viewer-zoom-btn zoom-out-btn" onClick={() => {
+                  const r = imageWrapRef.current.getBoundingClientRect();
+                  zoomAt(r.width / 2, r.height / 2, 0.8);
+                }} title="Zoom Out">−</button>
+                <button className="viewer-btn viewer-zoom-btn zoom-in-btn" onClick={() => {
+                  const r = imageWrapRef.current.getBoundingClientRect();
+                  zoomAt(r.width / 2, r.height / 2, 1.25);
+                }} title="Zoom In">+</button>
+                <button className="viewer-btn viewer-reset-btn" onClick={fitToScreen} title="Fit / Reset">⟲</button>
+              </>
+            )}
+            {currentPhoto.relative_path && (
+              <a
+                className="viewer-btn viewer-download-btn"
+                href={`/photos/${currentPhoto.relative_path}`}
+                download
+                title="Download Original"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style={{display:'block'}}>
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  <polyline points="7 10 12 15 17 10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  <line x1="12" y1="15" x2="12" y2="3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                </svg>
+              </a>
+            )}
+          </div>
         </div>
       </div>
 

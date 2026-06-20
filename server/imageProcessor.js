@@ -32,8 +32,10 @@ async function processPhoto(photo, cacheRoot) {
     return result;
   }
 
+  // Use photo.id to guarantee unique filenames across all libraries
   const parsed = path.parse(photo.filename);
   const baseName = parsed.name;
+  const uniqueId = photo.id;
   const thumbDir = path.join(cacheRoot, 'thumbnails');
   const displayDir = path.join(cacheRoot, 'display');
 
@@ -41,8 +43,10 @@ async function processPhoto(photo, cacheRoot) {
   fs.mkdirSync(thumbDir, { recursive: true });
   fs.mkdirSync(displayDir, { recursive: true });
 
-  const thumbFilename = `${baseName}${THUMBNAIL_SUFFIX}.${OUTPUT_FORMAT}`;
-  const displayFilename = `${baseName}${DISPLAY_SUFFIX}.${OUTPUT_FORMAT}`;
+  // Include photo.id in cache filenames to prevent collisions when
+  // the same filename exists in different libraries (e.g., IMG_5359.JPG)
+  const thumbFilename = `${baseName}-${uniqueId}${THUMBNAIL_SUFFIX}.${OUTPUT_FORMAT}`;
+  const displayFilename = `${baseName}-${uniqueId}${DISPLAY_SUFFIX}.${OUTPUT_FORMAT}`;
   const thumbPath = path.join(thumbDir, thumbFilename);
   const displayPath = path.join(displayDir, displayFilename);
 
